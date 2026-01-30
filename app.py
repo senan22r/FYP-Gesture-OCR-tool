@@ -3,6 +3,8 @@ import threading
 import time
 import tkinter as tk
 from tkinter import ttk, messagebox
+import ttkbootstrap as tb
+from typing import Optional, Tuple
 from PIL import Image, ImageGrab, ImageTk
 import numpy as np
 import cv2
@@ -15,8 +17,13 @@ import textwrap
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 system_on = False
-overlay_window = None
-last_capture_start = None
+overlay_window: Optional[tk.Toplevel] = None
+last_capture_start: Optional[float] = None
+window: Optional[tk.Tk] = None
+toggle_btn: Optional[ttk.Button] = None
+status_lbl: Optional[ttk.Label] = None
+history_tree: Optional[ttk.Treeview] = None
+history_full_text: Optional[tk.Text] = None
 OCR_UPSCALE_FACTOR = 1.2
 OCR_UPSCALE_MIN_DIM = 1200
 OCR_DPI = 350
@@ -61,12 +68,12 @@ def preprocess_image_for_ocr(image):
     mean_brightness = np.mean(gray)
     is_dark_background = mean_brightness < 100
 
-    # Gentle denoise + contrast enhancement.
+    # denoise
     denoised = cv2.fastNlMeansDenoising(gray, None, h=3, templateWindowSize=5, searchWindowSize=15)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
     enhanced = clahe.apply(denoised)
 
-    # Light sharpening helps thin strokes.
+    # sharpening
     blurred = cv2.GaussianBlur(enhanced, (0, 0), 1.0)
     sharpened = cv2.addWeighted(enhanced, 1.5, blurred, -0.5, 0)
 
@@ -82,7 +89,6 @@ def preprocess_image_for_ocr(image):
 
 def extract_text(image):
     processed = preprocess_image_for_ocr(image)
-    # LSTM-only OCR with DPI hint improves small text recognition.
     text = pytesseract.image_to_string(processed, config=f'--psm 6 --oem 1 --dpi {OCR_DPI}')
     return (text or "").strip()
 
@@ -174,30 +180,29 @@ def reconstruct_text_from_words(words):
     """Rebuild text using Tesseract's line/word ordering."""
     if not words:
         return ""
-    # Prefer Tesseract's internal ordering for better line structure.
     words_sorted = sorted(
         words,
-        key=lambda w: (w['block_num'], w['par_num'], w['line_num'], w['word_num'])
+        key=lambda word: (word['block_num'], word['par_num'], word['line_num'], word['word_num'])
     )
     lines = []
     current_key = None
     current_words = []
-    for w in words_sorted:
-        key = (w['block_num'], w['par_num'], w['line_num'])
+    for word in words_sorted:
+        key = (word['block_num'], word['par_num'], word['line_num'])
         if current_key is None or key != current_key:
             if current_words:
                 lines.append(' '.join(current_words))
-            current_words = [w['text']]
+            current_words = [word['text']]
             current_key = key
         else:
-            current_words.append(w['text'])
+            current_words.append(word['text'])
     if current_words:
         lines.append(' '.join(current_words))
     return '\n'.join(lines).strip()
 
 def point_in_rect(x, y, rect):
     """Check if point inside rectangle"""
-    return (rect['left'] <= x <= rect['right'] and rect['top'] <= y <= rect['bottom'])
+    return rect['left'] <= x <= rect['right'] and rect['top'] <= y <= rect['bottom']
 
 def rects_intersect(rect1, rect2):
     """Check if rectangles overlap"""
@@ -206,13 +211,13 @@ def rects_intersect(rect1, rect2):
 def build_line_index(words):
     line_map = {}
     line_bounds = {}
-    for w in words:
-        key = (w['block_num'], w['par_num'], w['line_num'])
-        line_map.setdefault(key, []).append(w)
+    for word in words:
+        key = (word['block_num'], word['par_num'], word['line_num'])
+        line_map.setdefault(key, []).append(word)
     for key, line_words in line_map.items():
-        line_words.sort(key=lambda w: w['word_num'])
-        top = min(w['top'] for w in line_words)
-        bottom = max(w['bottom'] for w in line_words)
+        line_words.sort(key=lambda word: word['word_num'])
+        top = min(word['top'] for word in line_words)
+        bottom = max(word['bottom'] for word in line_words)
         line_bounds[key] = (top, bottom)
     line_order = sorted(line_map.keys())
     return line_order, line_map, line_bounds
@@ -304,15 +309,13 @@ def create_overlay():
         return
     
     screenshot = ImageGrab.grab()
-    screen_width = screenshot.width
-    screen_height = screenshot.height
     
     overlay_window = tk.Toplevel()
     overlay_window.attributes('-fullscreen', True)
     overlay_window.attributes('-topmost', True)
     overlay_window.attributes('-alpha', 0.99)
     overlay_window.overrideredirect(True)
-    overlay_window.configure(cursor="crosshair")
+    overlay_window.configure(cursor="xterm")
     
     overlay_window.update_idletasks()
     win_width = overlay_window.winfo_screenwidth()
@@ -323,19 +326,27 @@ def create_overlay():
         try:
             screenshot = screenshot.resize((win_width, win_height), Image.Resampling.LANCZOS)
         except AttributeError:
-            screenshot = screenshot.resize((win_width, win_height), Image.LANCZOS)
+            screenshot = screenshot.resize((win_width, win_height), Image.BICUBIC)
     
     photo = ImageTk.PhotoImage(screenshot)
-    canvas = tk.Canvas(overlay_window, highlightthickness=0, cursor="crosshair", width=win_width, height=win_height)
+    canvas = tk.Canvas(overlay_window, highlightthickness=0, cursor="xterm", width=win_width, height=win_height)
     canvas.pack(fill="both", expand=True)
     canvas.create_image(0, 0, anchor="nw", image=photo)
     canvas.image = photo
     
-    border_width = 2
-    canvas.create_rectangle(0, 0, win_width, win_height, outline='red', width=border_width)
+    border_colors = ["#3B0A0A", "#7A1F1F", "#C23A3A", "#FF9A9A"]
+    for i, color in enumerate(border_colors):
+        canvas.create_rectangle(
+            i,
+            i,
+            win_width - 1 - i,
+            win_height - 1 - i,
+            outline=color,
+            width=2 if i == 0 else 1,
+        )
     
-    selection_start = None
-    selection_end = None
+    selection_start: Optional[Tuple[int, int]] = None
+    selection_end: Optional[Tuple[int, int]] = None
     selected_words = []
     ocr_words = []
     line_index = None
@@ -343,34 +354,57 @@ def create_overlay():
     status_text_id = None
     last_drag_time = 0.0
     
-    status_text_id = canvas.create_text(win_width // 2, 50, text="Processing OCR... Please wait", fill="yellow", font=("Arial", 16, "bold"), anchor="center")
+    status_text_id = canvas.create_text(
+        win_width // 2,
+        50,
+        text="Scanning...",
+        fill="#FFD36E",
+        font=("Arial", 22, "bold"),
+        anchor="center",
+    )
     canvas.update()
     
     window_ref = overlay_window
     canvas_ref = canvas
+    pulse_state = {"big": False}
+
+    def pulse_status():
+        nonlocal status_text_id
+        if status_text_id is None or window_ref is None:
+            return
+        try:
+            size = 26 if pulse_state["big"] else 22
+            color = "#FFD36E" if pulse_state["big"] else "#FFC046"
+            canvas_ref.itemconfig(status_text_id, font=("Arial", size, "bold"), fill=color)
+            pulse_state["big"] = not pulse_state["big"]
+            window_ref.after(300, pulse_status)
+        except Exception:
+            return
     
     def run_ocr():
         nonlocal ocr_words, line_index
         ocr_start = time.perf_counter()
         ocr_words = get_ocr_data(screenshot, win_width, win_height)
         line_index = build_line_index(ocr_words) if ocr_words else None
-        ocr_duration_ms = int((time.perf_counter() - ocr_start) * 1000)
         print(f"Found {len(ocr_words)} words")
         if last_capture_start is not None:
-            elapsed = time.perf_counter() - last_capture_start
+            elapsed = time.perf_counter() - float(last_capture_start)
             print(f"OCR processing time: {elapsed:.2f}s")
         def remove_status():
+            nonlocal status_text_id
             if status_text_id:
                 try:
                     canvas_ref.delete(status_text_id)
-                except:
+                except Exception:
                     pass
+                status_text_id = None
         if window_ref:
             try:
                 window_ref.after(0, remove_status)
-            except:
+            except Exception:
                 pass
     
+    window_ref.after(0, pulse_status)
     threading.Thread(target=run_ocr, daemon=True).start()
     
     def on_mouse_press(event):
@@ -395,6 +429,7 @@ def create_overlay():
             canvas.delete(rect_id)
         highlight_rects = []
         if ocr_words:
+            assert selection_start is not None
             selected_words = select_words_by_drag(
                 ocr_words,
                 selection_start[0],
@@ -404,10 +439,10 @@ def create_overlay():
                 line_index,
             )
             for word in selected_words:
-                rect_id = canvas.create_rectangle(word['left'], word['top'], word['right'], word['bottom'], outline='blue', fill='lightblue', width=2, stipple='gray50')
+                rect_id = canvas.create_rectangle(word['left'], word['top'], word['right'], word['bottom'], outline='', fill='#7FB2FF', width=0, stipple='gray50')
                 highlight_rects.append(rect_id)
     
-    def on_mouse_release(event):
+    def on_mouse_release(_event):
         nonlocal selection_start, selection_end, selected_words
         global overlay_window
         if selection_start is None:
@@ -422,15 +457,15 @@ def create_overlay():
                     pyperclip.copy(extracted_text)
                 except Exception:
                     pass
-                if 'history_tree' in globals():
+                if window is not None:
                     window.after(0, refresh_history)
-        if overlay_window:
+        if overlay_window is not None:
             overlay_window.destroy()
             overlay_window = None
     
-    def on_escape(event):
+    def on_escape(_event):
         global overlay_window
-        if overlay_window:
+        if overlay_window is not None:
             overlay_window.destroy()
             overlay_window = None
     
@@ -444,7 +479,7 @@ def start_selection():
     global last_capture_start
     if system_on:
         last_capture_start = time.perf_counter()
-        if 'window' in globals():
+        if window is not None:
             window.after(0, create_overlay)
         else:
             create_overlay()
@@ -459,13 +494,19 @@ def toggle_system():
     global system_on
     system_on = not system_on
     if system_on:
-        toggle_btn.config(text="OCR: ON ✅")
-        status_lbl.config(text="ON — Press CTRL+Q to capture text")
+        if toggle_btn is not None:
+            toggle_btn.config(text="OCR: ON ✅", bootstyle="success")
+        if status_lbl is not None:
+            status_lbl.config(text="ON — Press CTRL+Q to capture text", bootstyle="success")
     else:
-        toggle_btn.config(text="OCR: OFF ❌")
-        status_lbl.config(text="OFF")
+        if toggle_btn is not None:
+            toggle_btn.config(text="OCR: OFF ❌", bootstyle="secondary")
+        if status_lbl is not None:
+            status_lbl.config(text="OFF", bootstyle="secondary")
 
 def delete_selected_history():
+    if history_tree is None:
+        return
     sel = history_tree.selection()
     if not sel:
         messagebox.showinfo("Delete", "Select a row first.")
@@ -480,6 +521,8 @@ def delete_selected_history():
             messagebox.showerror("Delete", f"Failed to delete:\n{e}")
 
 def refresh_history():
+    if history_tree is None:
+        return
     for i in history_tree.get_children():
         history_tree.delete(i)
     rows = db.all()
@@ -491,7 +534,9 @@ def refresh_history():
         preview = textwrap.shorten(full_text.replace("\n", " "), width=80, placeholder="…")
         history_tree.insert("", "end", values=(ts, preview, full_text, doc_id))
 
-def on_history_select(event=None):
+def on_history_select(_event=None):
+    if history_tree is None or history_full_text is None:
+        return
     sel = history_tree.selection()
     if not sel:
         history_full_text.delete("1.0", "end")
@@ -504,23 +549,18 @@ def on_history_select(event=None):
 def build_gui():
     global window, toggle_btn, status_lbl
     global history_tree, history_full_text
-    window = tk.Tk()
+    window = tb.Window(themename="flatly")
     window.title("OCR Capture")
     window.geometry("720x520")
-    style = ttk.Style(window)
-    try:
-        style.theme_use("clam")
-    except tk.TclError:
-        pass
-    notebook = ttk.Notebook(window)
+    notebook = ttk.Notebook(window, padding=6)
     notebook.pack(fill="both", expand=True, padx=10, pady=10)
     tab_capture = ttk.Frame(notebook)
     notebook.add(tab_capture, text="Capture")
     top_bar = ttk.Frame(tab_capture)
     top_bar.pack(fill="x", pady=(10, 6))
-    toggle_btn = ttk.Button(top_bar, text="OCR: OFF ❌", command=toggle_system)
+    toggle_btn = ttk.Button(top_bar, text="OCR: OFF ❌", command=toggle_system, bootstyle="secondary")
     toggle_btn.pack(side="left")
-    status_lbl = ttk.Label(top_bar, text="OFF")
+    status_lbl = ttk.Label(top_bar, text="OFF", bootstyle="secondary")
     status_lbl.pack(side="left", padx=10)
     tip = (
         "Help:\n"
@@ -537,7 +577,7 @@ def build_gui():
     tab_history = ttk.Frame(notebook)
     notebook.add(tab_history, text="History")
     cols = ("timestamp", "preview", "text_full", "doc_id")
-    history_tree = ttk.Treeview(tab_history, columns=cols, show="headings", height=10)
+    history_tree = ttk.Treeview(tab_history, columns=cols, show="headings", height=10, bootstyle="info")
     history_tree.heading("timestamp", text="Timestamp")
     history_tree.heading("preview", text="Preview")
     history_tree.column("timestamp", width=160, anchor="w")
@@ -550,8 +590,8 @@ def build_gui():
     history_full_text.pack(fill="both", expand=True, padx=6, pady=(0, 8))
     actions = ttk.Frame(tab_history)
     actions.pack(fill="x", padx=6, pady=(0, 10))
-    ttk.Button(actions, text="Refresh", command=refresh_history).pack(side="left")
-    ttk.Button(actions, text="Delete Selected", command=delete_selected_history).pack(side="left", padx=6)
+    ttk.Button(actions, text="Refresh", command=refresh_history, bootstyle="secondary").pack(side="left")
+    ttk.Button(actions, text="Delete Selected", command=delete_selected_history, bootstyle="danger").pack(side="left", padx=6)
     refresh_history()
     window.mainloop()
 
