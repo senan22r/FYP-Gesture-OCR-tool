@@ -1,0 +1,95 @@
+A Windows desktop tool that lets you select text from anywhere on your screen as if it were normal selectable text, even in images, scanned PDFs, videos or remote desktops. Press a hotkey, drag over the text, and it's copied to your clipboard and saved to a searchable session document. It can also clean up the text, translate it and guess where it came from using AI.
+
+Final Year Project, BSc Business Information Systems, University College Cork (2026). Shortlisted for the university Final Year Project Award, one of 30 projects from over 140 students.
+
+## How it works
+
+1. Turn capture on with the power button on the Home tab.
+2. Press **Ctrl+Q** in any app. The screen freezes and the text is scanned in the background.
+3. Drag over the text. Words highlight live as you select.
+4. Release to copy the text to the clipboard and save it to the current session. Press **Esc** to cancel.
+
+## Features
+
+**Capture**
+- System-wide hotkey that works over any application
+- Frozen-screen overlay with live word highlighting
+- Two selection modes: **Native** (flows across lines like normal text selection and stays within one column) and **Box** (selects everything inside a rectangle)
+- Floating mini toolbar in the overlay for switching translation, selection and format on the fly
+
+**Two OCR engines**
+- **Online:** Google Cloud Vision for high accuracy
+- **Offline:** Tesseract with OpenCV preprocessing (denoising, contrast enhancement, sharpening, dark-background detection) for use without a connection or API key
+
+**AI features (Gemini API, online mode)**
+- **Deep Clean:** fixes broken line wraps, spacing and paragraph structure without changing meaning, with an automatic local fallback if the API is unavailable
+- **Translation:** translate captures to English, keeping the original alongside if you want
+- **Source guess:** identifies where a capture came from (page title, site and URL) by reading the browser address bar and the screenshot. It runs in the background so copying stays instant.
+
+**Organising your captures**
+- Sessions: group captures into named sessions
+- Editable session document with manual saving
+- Find in document with live highlighting and next/previous navigation
+- Light and dark themes
+- Local storage in a TinyDB JSON file
+
+## Tech stack
+
+| Area | Tools |
+|------|-------|
+| Language | Python |
+| Main interface | PySide6 (Qt) |
+| Capture overlay | Tkinter (separate event loop) |
+| Online OCR | Google Cloud Vision API |
+| AI | Gemini API |
+| Offline OCR | Tesseract (pytesseract), OpenCV, NumPy |
+| Storage | TinyDB |
+| System integration | pynput (global hotkey), pyperclip (clipboard), Pillow (screen capture) |
+
+## Design decisions
+
+- **Moved from Tesseract to Google Cloud Vision.** My first prototype used Tesseract only. It was too slow on a full-screen capture, which broke the feel of selecting text. Cloud Vision cut the delay, and I kept Tesseract as an offline fallback.
+- **Rebuilt line and word order from raw OCR.** Cloud Vision returns word boxes without line numbers, so I group words into lines by vertical position. That makes selection behave like real text instead of a rough rectangle.
+- **Threaded by design.** OCR, translation and source guessing all run on worker threads, and a Qt signal bridge keeps UI updates thread-safe, so the overlay never freezes.
+
+## Getting started
+
+### Prerequisites
+
+- Windows 10 or 11
+- Python 3.10 or later
+- A Google Cloud Vision API key (online mode)
+- A Gemini API key (Deep Clean, translation, source guess)
+- [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) (offline mode)
+
+### Installation
+
+```bash
+git clone https://github.com/senan22r/[REPO-NAME].git
+cd [REPO-NAME]
+pip install PySide6 pillow tinydb pyperclip pynput pytesseract opencv-python numpy
+```
+
+### API keys
+
+Set environment variables:
+
+```
+VISION_API_KEY=your_vision_key
+GEMINI_API_KEY=your_gemini_key
+```
+
+Or save each key in a text file next to the script (`vision_key.txt`, `gemini_key.txt`). Never commit these files.
+
+### Run
+
+```bash
+python [main-file].py
+```
+
+## Project structure
+
+```
+[main-file].py   Main app: interface, overlay, selection, OCR, AI features
+offline.py       Offline Tesseract OCR provider
+```
